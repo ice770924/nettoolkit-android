@@ -732,7 +732,7 @@ object NetworkHelper {
             .start()
         try {
             BufferedReader(InputStreamReader(process.inputStream)).use { reader ->
-                var line: String?
+                var line: String? = null
                 while (currentCoroutineContext().isActive && reader.readLine().also { line = it } != null) {
                     onLine(line!!)
                 }
