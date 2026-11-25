@@ -109,7 +109,7 @@ fun NetToolkitApp() {
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("NetToolkit Pro v1.3.3", fontWeight = FontWeight.Bold) },
+                title = { Text("NetToolkit Pro v1.3.4", fontWeight = FontWeight.Bold) },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.surfaceContainer
                 )
@@ -916,7 +916,7 @@ object NetworkHelper {
             connectTimeout = 5000
             readTimeout = 5000
             requestMethod = "GET"
-            setRequestProperty("User-Agent", "NetToolkitPro/1.3.3")
+            setRequestProperty("User-Agent", "NetToolkitPro/1.3.4")
         }
         return try {
             conn.inputStream.bufferedReader().use { it.readText() }
@@ -1234,4 +1234,285 @@ object NetworkHelper {
 
                 appendLine("SSID           : $displaySsid")
                 appendLine("BSSID (AP MAC) : $bssid")
-                appendLine
+                appendLine("IPv4 주소      : $ipStr")
+                appendLine("신호 강도      : $rssi dBm (품질 약 $signalQuality%)")
+                appendLine("수신 링크 속도 : $linkSpeed Mbps")
+                if (Build.VERSION.SDK_INT >= 29) {
+                    val txSpeed = try { wifiInfo.txLinkSpeedMbps } catch (_: Throwable) { -1 }
+                    val rxSpeed = try { wifiInfo.rxLinkSpeedMbps } catch (_: Throwable) { -1 }
+                    if (txSpeed > 0 || rxSpeed > 0) {
+                        appendLine("송/수신 속도   : TX \${txSpeed} Mbps / RX \${rxSpeed} Mbps")
+                    }
+                }
+                appendLine("주파수 대역    : $freqMhz MHz ($bandLabel)")
+                if (Build.VERSION.SDK_INT >= 30) {
+                    val wifiStd = try {
+                        when (wifiInfo.wifiStandard) {
+                            1 -> "802.11a/b/g (Wi-Fi 1/2/3)"
+                            4 -> "802.11n (Wi-Fi 4)"
+                            5 -> "802.11ac (Wi-Fi 5)"
+                            6 -> "802.11ax (Wi-Fi 6)"
+                            7 -> "802.11be (Wi-Fi 7)"
+                            else -> "표준 코드 \${wifiInfo.wifiStandard}"
+                        }
+                    } catch (_: Throwable) { "N/A" }
+                    appendLine("무선 규격      : $wifiStd")
+                }
+            } else {
+                appendLine("연결된 Wi-Fi 세션 정보가 없습니다.")
+            }
+        }
+    } catch (t: Throwable) {
+        "netsh wlan 조회 오류: ${t.localizedMessage}"
+    }
+
+    suspend fun streamPing(host: String, count: Int, onLine: (String) -> Unit) {
+        val safeHost = host.replace(Regex("[^a-zA-Z0-9.:-]"), "")
+        if (safeHost.isBlank()) {
+            onLine("유효한 호스트 또는 IP를 입력하세요.")
+            return
+        }
+        val resolvedAddr = try {
+            InetAddress.getByName(safeHost)
+        } catch (_: Throwable) {
+            null
+        }
+        if (resolvedAddr != null) {
+            val hostName = try { resolvedAddr.hostName } catch (_: Throwable) { safeHost }
+            val ipText = resolvedAddr.hostAddress ?: safeHost
+            onLine("대상 호스트: $hostName ($ipText)")
+        } else {
+            onLine("대상 호스트: $safeHost (DNS 조회 대기/실패)")
+        }
+
+        var process: Process? = null
+        try {
+            process = ProcessBuilder("/system/bin/ping", "-c", count.toString(), safeHost)
+                .redirectErrorStream(true)
+                .start()
+            BufferedReader(InputStreamReader(process.inputStream)).use { reader ->
+                var line: String? = null
+                while (currentCoroutineContext().isActive && reader.readLine().also { line = it } != null) {
+                    line?.let { onLine(it) }
+                }
+            }
+        } catch (t: Throwable) {
+            onLine("Ping 실행 오류: ${t.localizedMessage}")
+        } finally {
+            process?.destroy()
+        }
+    }
+
+    suspend fun runTraceroute(target: String, maxHops: Int, onHop: (TraceHop, String) -> Unit) {
+        val safeTarget = target.replace(Regex("[^a-zA-Z0-9.:-]"), "")
+        val resolvedIp = try {
+            InetAddress.getByName(safeTarget).hostAddress ?: safeTarget
+        } catch (_: Throwable) {
+            onHop(TraceHop(0, "DNS 실패", 0), "호스트를 찾을 수 없습니다: $safeTarget")
+            return
+        }
+
+        val ipRegex = Regex("""(\d{1,3}(?:\.\d{1,3}){3})""")
+        for (ttl in 1..maxHops) {
+            if (!currentCoroutineContext().isActive) break
+            val startMs = System.currentTimeMillis()
+            var proc: Process? = null
+            val output = try {
+                proc = ProcessBuilder("/system/bin/ping", "-c", "1", "-t", ttl.toString(), "-W", "2", resolvedIp)
+                    .redirectErrorStream(true)
+                    .start()
+                proc.inputStream.bufferedReader().use { it.readText() }
+            } catch (_: Throwable) {
+                ""
+            } finally {
+                proc?.destroy()
+            }
+            val elapsed = System.currentTimeMillis() - startMs
+
+            val responseLines = output.lines().drop(1).joinToString(" ")
+            val hopIp = ipRegex.find(responseLines)?.value ?: "*"
+
+            val hopObj = if (hopIp != "*") {
+                fetchGeoForHop(ttl, hopIp, elapsed)
+            } else {
+                TraceHop(ttl, "* (응답 없음)", elapsed)
+            }
+
+            val locTag = listOf(hopObj.city, hopObj.country).filter { it.isNotBlank() }.joinToString(", ")
+            val formatted = String.format("%2d  %-16s  %4dms  %s", ttl, hopIp, elapsed, locTag)
+            onHop(hopObj, formatted)
+
+            if (hopIp == resolvedIp) break
+        }
+    }
+
+    fun fetchGeoForHop(hopNum: Int, ip: String, rttMs: Long): TraceHop {
+        if (ip.isNotBlank() && isPrivateIp(ip)) {
+            return TraceHop(hopNum, ip, rttMs, city = "로컬/통신사 사설 게이트웨이")
+        }
+        return try {
+            val endpoint = if (ip.isBlank()) "https://ipwho.is/" else "https://ipwho.is/$ip"
+            val obj = JSONObject(httpGet(endpoint))
+            if (!obj.optBoolean("success", false)) return TraceHop(hopNum, ip, rttMs)
+            TraceHop(
+                hop = hopNum,
+                ip = obj.optString("ip", ip),
+                rttMs = rttMs,
+                city = obj.optString("city", ""),
+                country = obj.optString("country_code", ""),
+                isp = obj.optJSONObject("connection")?.optString("isp", "") ?: "",
+                lat = obj.optDouble("latitude").takeIf { !it.isNaN() && it.isFinite() },
+                lon = obj.optDouble("longitude").takeIf { !it.isNaN() && it.isFinite() }
+            )
+        } catch (_: Throwable) {
+            TraceHop(hopNum, ip, rttMs)
+        }
+    }
+
+    fun lookupWhoisAndGeo(query: String): String = try {
+        val targetIp = if (query.isBlank()) "" else InetAddress.getByName(query).hostAddress ?: query
+        val url = if (targetIp.isBlank()) "https://ipwho.is/" else "https://ipwho.is/$targetIp"
+        val obj = JSONObject(httpGet(url))
+
+        if (!obj.optBoolean("success", false)) {
+            "조회 실패: ${obj.optString("message", "유효하지 않은 주소")}"
+        } else {
+            val conn = obj.optJSONObject("connection")
+            val tz = obj.optJSONObject("timezone")
+            buildString {
+                appendLine("입력 쿼리   : ${query.ifBlank { "(내 공인 IP)" }}")
+                appendLine("대상 IP     : ${obj.optString("ip")} (${obj.optString("type")})")
+                appendLine("대륙 / 국가 : ${obj.optString("continent")} / ${obj.optString("country")} (${obj.optString("country_code")})")
+                appendLine("지역 / 도시 : ${obj.optString("region")} / ${obj.optString("city")}")
+                appendLine("우편번호    : ${obj.optString("postal", "N/A")}")
+                appendLine("위도 / 경도 : ${obj.optDouble("latitude")}, ${obj.optDouble("longitude")}")
+                appendLine("타임존      : ${tz?.optString("id")} (UTC ${tz?.optString("utc")})")
+                appendLine("----------------------------------------")
+                appendLine("ASN 번호    : AS${conn?.optInt("asn")}")
+                appendLine("ISP 사업자  : ${conn?.optString("isp")}")
+                appendLine("소속 기관   : ${conn?.optString("org")}")
+                appendLine("도메인      : ${conn?.optString("domain")}")
+            }
+        }
+    } catch (t: Throwable) {
+        "Whois / GeoIP 오류: ${t.localizedMessage}"
+    }
+
+    fun runNsLookup(domain: String): String = try {
+        val addresses = InetAddress.getAllByName(domain)
+        val dnsGoogle = httpGet("https://dns.google/resolve?name=$domain&type=ANY")
+        val json = JSONObject(dnsGoogle)
+        val answers = json.optJSONArray("Answer")
+
+        buildString {
+            appendLine("Server: System Resolver & Google DoH (8.8.8.8)")
+            appendLine("Name  : $domain\n")
+            addresses.forEach { addr ->
+                appendLine("Address: ${addr.hostAddress}")
+            }
+            if (answers != null) {
+                appendLine("\n=== 상세 DNS 레코드 ===")
+                for (i in 0 until answers.length()) {
+                    val rec = answers.getJSONObject(i)
+                    appendLine("Type ${rec.optInt("type")} | TTL ${rec.optInt("TTL")}s -> ${rec.optString("data")}")
+                }
+            }
+        }
+    } catch (t: Throwable) {
+        "nslookup 실패: ${t.localizedMessage}"
+    }
+
+    suspend fun runPortScan(host: String): String = coroutineScope {
+        val ports = mapOf(
+            21 to "FTP", 22 to "SSH", 23 to "Telnet", 25 to "SMTP",
+            53 to "DNS", 80 to "HTTP", 110 to "POP3", 143 to "IMAP",
+            443 to "HTTPS", 3306 to "MySQL", 3389 to "RDP", 8080 to "HTTP-Alt"
+        )
+        val ip = try {
+            InetAddress.getByName(host).hostAddress ?: host
+        } catch (_: Throwable) {
+            return@coroutineScope "호스트 해석 실패: $host"
+        }
+
+        val results = ports.map { (port, name) ->
+            async(Dispatchers.IO) {
+                val open = try {
+                    Socket().use { it.connect(InetSocketAddress(ip, port), 700) }
+                    true
+                } catch (_: Throwable) {
+                    false
+                }
+                Triple(port, name, open)
+            }
+        }.awaitAll()
+
+        buildString {
+            appendLine("대상 호스트: $host ($ip) 주요 포트 상태")
+            appendLine("PORT     SERVICE     STATE")
+            appendLine("-------------------------------")
+            results.forEach { (port, service, open) ->
+                val state = if (open) "OPEN" else "CLOSED/FILTERED"
+                appendLine(String.format("%-8d %-11s %s", port, service, state))
+            }
+        }
+    }
+
+    fun getRouteTable(context: Context): String = try {
+        buildString {
+            val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            val lp = cm.getLinkProperties(cm.activeNetwork)
+            if (lp == null) {
+                appendLine("활성 라우팅 테이블이 없습니다.")
+            } else {
+                appendLine("인터페이스: ${lp.interfaceName}")
+                appendLine("대상 네트워크(Destination)       게이트웨이(Gateway)     기본경로")
+                appendLine("-----------------------------------------------------------------")
+                lp.routes.forEach { route ->
+                    val dest = route.destination.toString()
+                    val gw = route.gateway?.hostAddress ?: "On-link"
+                    val isDef = try { route.isDefaultRoute } catch (_: Throwable) { false }
+                    appendLine(String.format("%-30s %-22s %s", dest, gw, if (isDef) "YES" else "NO"))
+                }
+            }
+        }
+    } catch (t: Throwable) {
+        "라우팅 테이블 조회 오류: ${t.localizedMessage}"
+    }
+
+    suspend fun runLocalSubnetScan(context: Context): String = coroutineScope {
+        val myIp = getPrimaryIp(context)
+        val parts = myIp.split(".")
+        if (parts.size != 4) {
+            return@coroutineScope "IPv4 사설망(Wi-Fi 등) 연결 시 서브넷 스캔이 가능합니다.\n현재 할당 IP: $myIp"
+        }
+        val prefix = "${parts[0]}.${parts[1]}.${parts[2]}"
+
+        val reachableHosts = (1..254).map { lastOctet ->
+            async(Dispatchers.IO) {
+                val candidate = "$prefix.$lastOctet"
+                val ok = try { InetAddress.getByName(candidate).isReachable(350) } catch (_: Throwable) { false }
+                if (ok) candidate else null
+            }
+        }.awaitAll().filterNotNull()
+
+        buildString {
+            appendLine("로컬 서브넷 활성 호스트 탐색 ($prefix.0/24)")
+            appendLine("--------------------------------------------")
+            if (reachableHosts.isEmpty()) appendLine("응답한 기기가 없습니다.")
+            reachableHosts.forEach { host ->
+                val tag = if (host == myIp) " (내 기기)" else if (host.endsWith(".1")) " (게이트웨이 추정)" else ""
+                appendLine("응답 확인 : $host$tag")
+            }
+        }
+    }
+
+    private fun prefixToMask(prefix: Int): String {
+        val p = prefix.coerceIn(0, 32)
+        val mask = if (p == 0) 0 else -1 shl (32 - p)
+        return "${(mask ushr 24) and 0xFF}.${(mask ushr 16) and 0xFF}.${(mask ushr 8) and 0xFF}.${mask and 0xFF}"
+    }
+
+    private fun isPrivateIp(ip: String): Boolean =
+        ip.startsWith("10.") || ip.startsWith("192.168.") || ip.startsWith("127.") ||
+        ip.matches(Regex("""^172\.(1[6-9]|2\d|3[0-1])\..*"""))
+}
