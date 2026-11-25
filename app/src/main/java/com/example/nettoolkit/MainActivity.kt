@@ -3,8 +3,13 @@ package com.example.nettoolkit
 import android.content.Context
 import android.content.Intent
 import android.graphics.Paint
+import android.graphics.RadialGradient
+import android.graphics.Shader
 import android.net.ConnectivityManager
 import android.net.LinkProperties
+import android.net.NetworkCapabilities
+import android.net.wifi.WifiInfo
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
@@ -15,7 +20,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -50,6 +55,10 @@ import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.net.*
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import kotlin.math.cos
+import kotlin.math.sin
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -93,7 +102,7 @@ fun NetToolkitApp() {
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("NetToolkit Pro", fontWeight = FontWeight.Bold) },
+                title = { Text("NetToolkit Pro v1.3", fontWeight = FontWeight.Bold) },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.surfaceContainer
                 )
@@ -140,7 +149,6 @@ fun NetToolkitApp() {
     }
 }
 
-// 1. ipconfig /all + NAT IP + Release / Renew
 @Composable
 fun IpConfigScreen() {
     val context = LocalContext.current
@@ -246,7 +254,6 @@ fun IpConfigScreen() {
     }
 }
 
-// 2. Ping 화면 (입력창을 상단에 배치하여 화상 키보드 가림 완벽 차단)
 @Composable
 fun PingScreen() {
     val scope = rememberCoroutineScope()
@@ -320,7 +327,6 @@ fun PingScreen() {
     }
 }
 
-// 3. Tracert + Visual Traceroute 화면
 @Composable
 fun TracertScreen() {
     val scope = rememberCoroutineScope()
@@ -389,7 +395,7 @@ fun TracertScreen() {
                 selected = viewMode == 1,
                 onClick = { viewMode = 1 },
                 shape = SegmentedButtonDefaults.itemShape(index = 1, count = 2)
-            ) { Text("시각화 맵 (Visual Route)") }
+            ) { Text("지구본 시각화 (3D Globe)") }
         }
 
         if (viewMode == 0) {
@@ -400,31 +406,71 @@ fun TracertScreen() {
     }
 }
 
+private data class GlobeProjectedPoint(
+    val x: Float,
+    val y: Float,
+    val visible: Boolean,
+    val depth: Double
+)
+
 @Composable
 fun VisualTracerouteMap(hops: List<TraceHop>, isRunning: Boolean) {
-    var scale by remember { mutableFloatStateOf(1f) }
-    var offset by remember { mutableStateOf(Offset.Zero) }
+    // 서울(경도 127도)이 정면/우상단에 잘 보이도록 초기 경도 회전값 설정
+    var rotLonDeg by remember { mutableFloatStateOf(-127f) }
+    var rotLatDeg by remember { mutableFloatStateOf(-28f) }
+    var autoCenterApplied by remember { mutableStateOf(false) }
+
     val geoHops = hops.filter { it.lat != null && it.lon != null && it.lat.isFinite() && it.lon.isFinite() }
+
+    LaunchedEffect(geoHops.size) {
+        if (!autoCenterApplied && geoHops.isNotEmpty()) {
+            val first = geoHops.first()
+            rotLonDeg = (-first.lon!!).toFloat()
+            rotLatDeg = (first.lat!! * 0.5).toFloat().coerceIn(-45f, 45f)
+            autoCenterApplied = true
+        }
+    }
 
     val labelPaint = remember {
         Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = android.graphics.Color.WHITE
-            textSize = 28f
+            textSize = 26f
             isFakeBoldText = true
         }
+    }
+
+    // 대표 대륙 윤곽 좌표(위도, 경도)로 지구본 위에 대륙 실루엣 표현
+    val continentPolygons = remember {
+        listOf(
+            // 한반도/동아시아 대륙
+            listOf(35.0 to 126.0, 38.0 to 129.0, 42.0 to 135.0, 50.0 to 135.0, 52.0 to 120.0, 40.0 to 118.0, 34.0 to 122.0, 35.0 to 126.0),
+            // 일본 열도
+            listOf(31.5 to 131.0, 34.0 to 135.0, 36.0 to 140.5, 42.0 to 142.0, 44.0 to 145.0, 41.0 to 140.0, 34.0 to 132.0, 31.5 to 131.0),
+            // 유라시아 본토
+            listOf(22.0 to 78.0, 10.0 to 77.0, 25.0 to 62.0, 41.0 to 29.0, 55.0 to 10.0, 70.0 to 25.0, 72.0 to 80.0, 68.0 to 170.0, 55.0 to 135.0, 22.0 to 108.0, 22.0 to 78.0),
+            // 북아메리카
+            listOf(15.0 to -92.0, 30.0 to -97.0, 30.0 to -82.0, 45.0 to -67.0, 58.0 to -64.0, 70.0 to -125.0, 60.0 to -150.0, 48.0 to -125.0, 32.0 to -117.0, 15.0 to -92.0),
+            // 남아메리카
+            listOf(10.0 to -72.0, 5.0 to -50.0, -10.0 to -35.0, -25.0 to -48.0, -54.0 to -68.0, -35.0 to -72.0, -5.0 to -81.0, 10.0 to -72.0),
+            // 아프리카
+            listOf(35.0 to -6.0, 32.0 to 32.0, 12.0 to 51.0, -15.0 to 40.0, -34.0 to 20.0, -18.0 to 12.0, 5.0 to -8.0, 20.0 to -17.0, 35.0 to -6.0),
+            // 오세아니아/호주
+            listOf(-15.0 to 130.0, -18.0 to 146.0, -35.0 to 150.0, -38.0 to 140.0, -32.0 to 115.0, -20.0 to 114.0, -15.0 to 130.0)
+        )
     }
 
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(260.dp)
-                .clip(RoundedCornerShape(12.dp))
-                .background(Color(0xFF0A1628))
+                .height(300.dp)
+                .clip(RoundedCornerShape(14.dp))
+                .background(Color(0xFF050B14))
                 .pointerInput(Unit) {
-                    detectTransformGestures { _, pan, zoom, _ ->
-                        scale = (scale * zoom).coerceIn(1f, 4f)
-                        offset = if (scale == 1f) Offset.Zero else offset + pan
+                    detectDragGestures { change, dragAmount ->
+                        change.consume()
+                        rotLonDeg += dragAmount.x * 0.45f
+                        rotLatDeg = (rotLatDeg + dragAmount.y * 0.45f).coerceIn(-75f, 75f)
                     }
                 }
         ) {
@@ -433,66 +479,198 @@ fun VisualTracerouteMap(hops: List<TraceHop>, isRunning: Boolean) {
                 val h = size.height
                 if (w <= 0f || h <= 0f) return@Canvas
 
-                fun project(lat: Double, lon: Double): Offset {
-                    val x = ((lon + 180.0) / 360.0 * w).toFloat()
-                    val y = ((90.0 - lat) / 180.0 * h).toFloat()
-                    return Offset(
-                        x = (x - w / 2f) * scale + w / 2f + offset.x,
-                        y = (y - h / 2f) * scale + h / 2f + offset.y
-                    )
+                val center = Offset(w / 2f, h / 2f)
+                val radius = minOf(w, h) * 0.42f
+                if (radius <= 10f) return@Canvas
+
+                val lambda0 = Math.toRadians(rotLonDeg.toDouble())
+                val phi0 = Math.toRadians(rotLatDeg.toDouble())
+
+                // 정사영(Orthographic) 3D 지구본 투영 함수
+                fun projectGlobe(latDeg: Double, lonDeg: Double, altitudeFactor: Double = 1.0): GlobeProjectedPoint {
+                    val phi = Math.toRadians(latDeg)
+                    val lam = Math.toRadians(lonDeg) - lambda0
+                    val cosPhi = cos(phi)
+                    val sinPhi = sin(phi)
+                    val cosLam = cos(lam)
+                    val sinLam = sin(lam)
+                    val cosPhi0 = cos(phi0)
+                    val sinPhi0 = sin(phi0)
+
+                    val x3d = cosPhi * sinLam
+                    val y3d = sinPhi0 * cosPhi * cosLam - cosPhi0 * sinPhi
+                    val z3d = cosPhi0 * cosPhi * cosLam + sinPhi0 * sinPhi
+
+                    val r = radius * altitudeFactor
+                    val sx = (center.x + x3d * r).toFloat()
+                    val sy = (center.y - y3d * r).toFloat()
+                    return GlobeProjectedPoint(sx, sy, z3d >= -0.05, z3d)
                 }
 
-                val gridColor = Color(0xFF1A3152)
-                for (lon in -150..150 step 30) {
-                    val p1 = project(90.0, lon.toDouble())
-                    val p2 = project(-90.0, lon.toDouble())
-                    drawLine(gridColor, p1, p2, strokeWidth = 1f)
+                // 1) 대기권 후광 + 입체 셰이딩 지구본 구체 그리기
+                drawContext.canvas.nativeCanvas.apply {
+                    val haloPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                        shader = RadialGradient(
+                            center.x,
+                            center.y,
+                            radius * 1.18f,
+                            intArrayOf(
+                                android.graphics.Color.argb(90, 56, 189, 248),
+                                android.graphics.Color.argb(25, 14, 116, 144),
+                                android.graphics.Color.TRANSPARENT
+                            ),
+                            floatArrayOf(0.75f, 0.92f, 1.0f),
+                            Shader.TileMode.CLAMP
+                        )
+                    }
+                    drawCircle(center.x, center.y, radius * 1.18f, haloPaint)
+
+                    val spherePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                        shader = RadialGradient(
+                            center.x - radius * 0.32f,
+                            center.y - radius * 0.32f,
+                            radius * 1.25f,
+                            intArrayOf(
+                                android.graphics.Color.rgb(29, 78, 137),
+                                android.graphics.Color.rgb(12, 33, 66),
+                                android.graphics.Color.rgb(5, 13, 28)
+                            ),
+                            floatArrayOf(0.0f, 0.65f, 1.0f),
+                            Shader.TileMode.CLAMP
+                        )
+                    }
+                    drawCircle(center.x, center.y, radius, spherePaint)
                 }
+
+                // 지구본 외곽선
+                drawCircle(
+                    color = Color(0xFF38BDF8).copy(alpha = 0.7f),
+                    radius = radius,
+                    center = center,
+                    style = Stroke(width = 2f)
+                )
+
+                // 2) 위선(Latitudes) 및 경선(Longitudes) 격자선 그리기
+                val gridColor = Color(0xFF38BDF8).copy(alpha = 0.18f)
                 for (lat in -60..60 step 30) {
-                    val p1 = project(lat.toDouble(), -180.0)
-                    val p2 = project(lat.toDouble(), 180.0)
-                    drawLine(gridColor, p1, p2, strokeWidth = 1f)
+                    val path = Path()
+                    var started = false
+                    for (lon in -180..180 step 6) {
+                        val pt = projectGlobe(lat.toDouble(), lon.toDouble())
+                        if (pt.visible) {
+                            if (!started) {
+                                path.moveTo(pt.x, pt.y)
+                                started = true
+                            } else {
+                                path.lineTo(pt.x, pt.y)
+                            }
+                        } else {
+                            started = false
+                        }
+                    }
+                    drawPath(path, color = gridColor, style = Stroke(width = 1f))
                 }
 
+                for (lon in -180..150 step 30) {
+                    val path = Path()
+                    var started = false
+                    for (lat in -90..90 step 6) {
+                        val pt = projectGlobe(lat.toDouble(), lon.toDouble())
+                        if (pt.visible) {
+                            if (!started) {
+                                path.moveTo(pt.x, pt.y)
+                                started = true
+                            } else {
+                                path.lineTo(pt.x, pt.y)
+                            }
+                        } else {
+                            started = false
+                        }
+                    }
+                    drawPath(path, color = gridColor, style = Stroke(width = 1f))
+                }
+
+                // 3) 지구본 위 대륙 윤곽 렌더링
+                val landStrokeColor = Color(0xFF34D399).copy(alpha = 0.55f)
+                val landFillColor = Color(0xFF10B981).copy(alpha = 0.12f)
+                continentPolygons.forEach { poly ->
+                    val polyPath = Path()
+                    var started = false
+                    poly.forEach { (lat, lon) ->
+                        val pt = projectGlobe(lat, lon)
+                        if (pt.visible) {
+                            if (!started) {
+                                polyPath.moveTo(pt.x, pt.y)
+                                started = true
+                            } else {
+                                polyPath.lineTo(pt.x, pt.y)
+                            }
+                        } else {
+                            started = false
+                        }
+                    }
+                    drawPath(polyPath, color = landFillColor)
+                    drawPath(polyPath, color = landStrokeColor, style = Stroke(width = 1.6f))
+                }
+
+                // 4) 홉(Hop) 간 구면 궤적(3D Arc) 연결
                 for (i in 0 until geoHops.size - 1) {
-                    val start = project(geoHops[i].lat!!, geoHops[i].lon!!)
-                    val end = project(geoHops[i + 1].lat!!, geoHops[i + 1].lon!!)
-                    val mid = Offset((start.x + end.x) / 2f, minOf(start.y, end.y) - 35f * scale)
-                    val path = Path().apply {
-                        moveTo(start.x, start.y)
-                        quadraticTo(mid.x, mid.y, end.x, end.y)
+                    val a = geoHops[i]
+                    val b = geoHops[i + 1]
+                    val arcPath = Path()
+                    var started = false
+                    val steps = 24
+                    for (s in 0..steps) {
+                        val t = s.toDouble() / steps.toDouble()
+                        val interpLat = a.lat!! + (b.lat!! - a.lat!!) * t
+                        val interpLon = a.lon!! + (b.lon!! - a.lon!!) * t
+                        val arcLift = 1.0 + sin(t * Math.PI) * 0.12
+                        val pt = projectGlobe(interpLat, interpLon, arcLift)
+                        if (pt.visible) {
+                            if (!started) {
+                                arcPath.moveTo(pt.x, pt.y)
+                                started = true
+                            } else {
+                                arcPath.lineTo(pt.x, pt.y)
+                            }
+                        } else {
+                            started = false
+                        }
                     }
                     drawPath(
-                        path = path,
+                        path = arcPath,
                         color = Color(0xFF38BDF8),
                         style = Stroke(
-                            width = 3.5f,
-                            pathEffect = PathEffect.dashPathEffect(floatArrayOf(12f, 6f), 0f)
+                            width = 3f,
+                            pathEffect = PathEffect.dashPathEffect(floatArrayOf(10f, 6f), 0f)
                         )
                     )
                 }
 
+                // 5) 지구본 전면 홉 마커 및 라벨 렌더링
                 geoHops.forEach { hop ->
-                    val pt = project(hop.lat!!, hop.lon!!)
-                    val nodeColor = when {
-                        hop.hop == 0 -> Color(0xFF22C55E)
-                        hop.rttMs < 50 -> Color(0xFF38BDF8)
-                        hop.rttMs < 150 -> Color(0xFFFACC15)
-                        else -> Color(0xFFF87171)
-                    }
-                    drawCircle(color = nodeColor.copy(alpha = 0.28f), radius = 14f, center = pt)
-                    drawCircle(color = nodeColor, radius = 6.5f, center = pt)
+                    val pt = projectGlobe(hop.lat!!, hop.lon!!, 1.02)
+                    if (pt.visible) {
+                        val nodeColor = when {
+                            hop.hop == 0 -> Color(0xFF22C55E)
+                            hop.rttMs < 50 -> Color(0xFF38BDF8)
+                            hop.rttMs < 150 -> Color(0xFFFACC15)
+                            else -> Color(0xFFF87171)
+                        }
+                        drawCircle(color = nodeColor.copy(alpha = 0.30f), radius = 15f, center = Offset(pt.x, pt.y))
+                        drawCircle(color = nodeColor, radius = 6.5f, center = Offset(pt.x, pt.y))
 
-                    val label = if (hop.hop == 0) "내 위치 (${hop.city})" else "#${hop.hop} ${hop.city.ifBlank { hop.country }}"
-                    drawContext.canvas.nativeCanvas.drawText(label, pt.x + 10f, pt.y - 10f, labelPaint)
+                        val label = if (hop.hop == 0) "출발 (${hop.city.ifBlank { "내 위치" }})" else "#${hop.hop} ${hop.city.ifBlank { hop.country }}"
+                        drawContext.canvas.nativeCanvas.drawText(label, pt.x + 10f, pt.y - 8f, labelPaint)
+                    }
                 }
             }
 
             Text(
-                text = if (isRunning) "실시간 경로 지오코딩 중... (두 손가락 줌/드래그)" else "두 손가락 줌/드래그 지원 | 탐색 홉: ${hops.size}",
+                text = if (isRunning) "지구본 경로 추적 중... (한 손가락으로 지구본 회전)" else "한 손가락 드래그로 지구본 회전 | 홉: ${hops.size}",
                 color = Color(0xFF94A3B8),
                 fontSize = 11.sp,
-                modifier = Modifier.align(Alignment.BottomStart).padding(8.dp)
+                modifier = Modifier.align(Alignment.BottomStart).padding(10.dp)
             )
         }
 
@@ -503,7 +681,12 @@ fun VisualTracerouteMap(hops: List<TraceHop>, isRunning: Boolean) {
             ) {
                 hops.forEach { hop ->
                     AssistChip(
-                        onClick = {},
+                        onClick = {
+                            if (hop.lat != null && hop.lon != null) {
+                                rotLonDeg = (-hop.lon).toFloat()
+                                rotLatDeg = (hop.lat * 0.5).toFloat().coerceIn(-75f, 75f)
+                            }
+                        },
                         label = {
                             val title = if (hop.hop == 0) "출발" else "Hop ${hop.hop}"
                             val loc = listOf(hop.city, hop.country).filter { it.isNotBlank() }.joinToString(", ").ifBlank { "사설/응답없음" }
@@ -516,7 +699,6 @@ fun VisualTracerouteMap(hops: List<TraceHop>, isRunning: Boolean) {
     }
 }
 
-// 4. Whois 화면
 @Composable
 fun WhoisScreen() {
     val scope = rememberCoroutineScope()
@@ -561,18 +743,26 @@ fun WhoisScreen() {
     }
 }
 
-// 5. 기타 CMD 네트워크 명령어 화면
 @Composable
 fun CmdToolsScreen() {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val focusManager = LocalFocusManager.current
-    var selectedCmd by remember { mutableStateOf("nslookup") }
-    var targetArg by remember { mutableStateOf("naver.com") }
+    var selectedCmd by remember { mutableStateOf("nbtstat -a") }
+    var targetArg by remember { mutableStateOf("192.168.0.1") }
     var cmdOutput by remember { mutableStateOf("실행할 네트워크 명령어를 선택하고 실행을 누르세요.\n") }
-    var running by remember { mutableStateOf(false) }
+    var cmdJob by remember { mutableStateOf<Job?>(null) }
+    val running = cmdJob?.isActive == true
 
-    val commands = listOf("nslookup", "portscan (netstat 대용)", "route print", "subnet scan (arp 대용)")
+    val commands = listOf(
+        "nbtstat -a",
+        "pathping",
+        "netsh wlan",
+        "nslookup",
+        "portscan",
+        "route print",
+        "subnet scan"
+    )
 
     Column(
         modifier = Modifier
@@ -588,17 +778,34 @@ fun CmdToolsScreen() {
             commands.forEach { cmd ->
                 FilterChip(
                     selected = selectedCmd == cmd,
-                    onClick = { selectedCmd = cmd },
+                    onClick = {
+                        selectedCmd = cmd
+                        if (cmd == "nbtstat -a" && (targetArg == "google.com" || targetArg == "naver.com")) {
+                            val gw = NetworkHelper.getDefaultGatewayIp(context)
+                            if (gw != null) targetArg = gw
+                        } else if (cmd == "pathping" && (targetArg.startsWith("192.168.") || targetArg.startsWith("10."))) {
+                            targetArg = "8.8.8.8"
+                        }
+                    },
                     label = { Text(cmd) }
                 )
             }
         }
 
-        if (selectedCmd.startsWith("nslookup") || selectedCmd.startsWith("portscan")) {
+        val needsTarget = selectedCmd in listOf("nbtstat -a", "pathping", "nslookup", "portscan")
+        if (needsTarget) {
             OutlinedTextField(
                 value = targetArg,
                 onValueChange = { targetArg = it.trim() },
-                label = { Text("대상 도메인 또는 IP 입력") },
+                label = {
+                    Text(
+                        when (selectedCmd) {
+                            "nbtstat -a" -> "대상 로컬 IP (예: 192.168.0.10 또는 PC/NAS IP)"
+                            "pathping" -> "경로·손실 분석 대상 IP / 도메인 (예: 8.8.8.8)"
+                            else -> "대상 도메인 또는 IP 입력"
+                        }
+                    )
+                },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
@@ -606,34 +813,67 @@ fun CmdToolsScreen() {
             )
         }
 
-        Button(
-            onClick = {
-                focusManager.clearFocus()
-                running = true
-                cmdOutput = "> $selectedCmd 실행 중...\n"
-                scope.launch {
-                    cmdOutput = withContext(Dispatchers.IO) {
-                        when {
-                            selectedCmd.startsWith("nslookup") -> NetworkHelper.runNsLookup(targetArg)
-                            selectedCmd.startsWith("portscan") -> NetworkHelper.runPortScan(targetArg)
-                            selectedCmd.startsWith("route") -> NetworkHelper.getRouteTable(context)
-                            else -> NetworkHelper.runLocalSubnetScan(context)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+            Button(
+                onClick = {
+                    focusManager.clearFocus()
+                    cmdOutput = "> $selectedCmd 실행 중...\n"
+                    cmdJob = scope.launch(Dispatchers.IO) {
+                        when (selectedCmd) {
+                            "nbtstat -a" -> {
+                                val res = NetworkHelper.runNbtStat(targetArg)
+                                withContext(Dispatchers.Main) { cmdOutput = res }
+                            }
+                            "pathping" -> {
+                                NetworkHelper.runPathPing(targetArg, maxHops = 15, samplesPerHop = 4) { line ->
+                                    scope.launch(Dispatchers.Main) { cmdOutput += "$line\n" }
+                                }
+                            }
+                            "netsh wlan" -> {
+                                val res = NetworkHelper.getNetshWlan(context)
+                                withContext(Dispatchers.Main) { cmdOutput = res }
+                            }
+                            "nslookup" -> {
+                                val res = NetworkHelper.runNsLookup(targetArg)
+                                withContext(Dispatchers.Main) { cmdOutput = res }
+                            }
+                            "portscan" -> {
+                                val res = NetworkHelper.runPortScan(targetArg)
+                                withContext(Dispatchers.Main) { cmdOutput = res }
+                            }
+                            "route print" -> {
+                                val res = NetworkHelper.getRouteTable(context)
+                                withContext(Dispatchers.Main) { cmdOutput = res }
+                            }
+                            else -> {
+                                val res = NetworkHelper.runLocalSubnetScan(context)
+                                withContext(Dispatchers.Main) { cmdOutput = res }
+                            }
                         }
                     }
-                    running = false
+                },
+                enabled = !running,
+                modifier = Modifier.weight(1f)
+            ) {
+                Text(if (running) "명령 처리 중..." else "$selectedCmd 실행")
+            }
+
+            if (running) {
+                OutlinedButton(
+                    onClick = {
+                        cmdJob?.cancel()
+                        cmdOutput += "\n[사용자에 의해 중지됨]\n"
+                    }
+                ) {
+                    Text("중지")
                 }
-            },
-            enabled = !running,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text(if (running) "명령 처리 중..." else "$selectedCmd 실행")
+            }
         }
 
         TerminalBox(title = "CMD 실행 결과 [$selectedCmd]", content = cmdOutput)
     }
 }
 
-// 중첩 세로 스크롤 크래시를 방지하기 위해 단일 컨테이너 + 가로 스크롤/텍스트 복사 지원
 @Composable
 fun TerminalBox(title: String, content: String, modifier: Modifier = Modifier) {
     Card(
@@ -665,13 +905,22 @@ object NetworkHelper {
             connectTimeout = 5000
             readTimeout = 5000
             requestMethod = "GET"
-            setRequestProperty("User-Agent", "NetToolkitPro/1.1")
+            setRequestProperty("User-Agent", "NetToolkitPro/1.3")
         }
         return try {
             conn.inputStream.bufferedReader().use { it.readText() }
         } finally {
             conn.disconnect()
         }
+    }
+
+    fun getDefaultGatewayIp(context: Context): String? = try {
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val lp = cm.getLinkProperties(cm.activeNetwork)
+        lp?.routes?.firstOrNull { try { it.isDefaultRoute && it.gateway is Inet4Address } catch (_: Throwable) { false } }
+            ?.gateway?.hostAddress
+    } catch (_: Throwable) {
+        null
     }
 
     fun getPrimaryIp(context: Context): String = try {
@@ -735,7 +984,7 @@ object NetworkHelper {
                     }
                 }
             } catch (_: Throwable) {
-                appendLine("Android 11+ 보안 정책으로 로우레벨 인터페이스 열람이 제한되었습니다 (상단 활성 어댑터 정보를 참고하세요).")
+                appendLine("Android 11+ 보안 정책으로 로우레벨 인터페이스 열람이 제한되었습니다.")
             }
         }
     } catch (t: Throwable) {
@@ -774,6 +1023,236 @@ object NetworkHelper {
         }
     }
 
+    fun runNbtStat(targetIpInput: String): String {
+        val ip = targetIpInput.trim()
+        if (ip.isBlank()) return "조회할 IP 주소를 입력하세요 (예: 192.168.0.10)."
+        return try {
+            val addr = InetAddress.getByName(ip)
+            val packetData = byteArrayOf(
+                0x13, 0x37, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                0x20,
+                0x43, 0x4B,
+                0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41,
+                0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41,
+                0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41,
+                0x41, 0x41, 0x41, 0x41, 0x41, 0x41,
+                0x00,
+                0x00, 0x21,
+                0x00, 0x01
+            )
+
+            DatagramSocket().use { socket ->
+                socket.soTimeout = 2000
+                val sendPkt = DatagramPacket(packetData, packetData.size, addr, 137)
+                socket.send(sendPkt)
+
+                val recvBuf = ByteArray(1024)
+                val recvPkt = DatagramPacket(recvBuf, recvBuf.size)
+                socket.receive(recvPkt)
+
+                val len = recvPkt.length
+                val payloadStart = 56
+                if (len <= payloadStart) {
+                    return "NetBIOS 응답을 수신했으나 이름 테이블 데이터가 비어 있습니다 ($ip)."
+                }
+
+                val numNames = recvBuf[payloadStart].toInt() and 0xFF
+                var cursor = payloadStart + 1
+                val nameEntries = mutableListOf<String>()
+
+                for (i in 0 until numNames) {
+                    if (cursor + 18 > len) break
+                    val rawName = String(recvBuf, cursor, 15, Charsets.ISO_8859_1).trim()
+                    val suffix = recvBuf[cursor + 15].toInt() and 0xFF
+                    val flags = ((recvBuf[cursor + 16].toInt() and 0xFF) shl 8) or (recvBuf[cursor + 17].toInt() and 0xFF)
+                    val isGroup = (flags and 0x8000) != 0
+                    val roleDesc = when (suffix) {
+                        0x00 -> if (isGroup) "Workgroup / Domain" else "Workstation Service"
+                        0x03 -> "Messenger Service"
+                        0x1B -> "Domain Master Browser"
+                        0x1C -> "Domain Controllers"
+                        0x1D -> "Master Browser"
+                        0x1E -> "Browser Service Elections"
+                        0x20 -> "File Server Service"
+                        else -> "Code 0x" + String.format("%02X", suffix)
+                    }
+                    val typeLabel = if (isGroup) "<GROUP>" else "<UNIQUE>"
+                    nameEntries.add(String.format("  %-16s %-8s %s", rawName, typeLabel, roleDesc))
+                    cursor += 18
+                }
+
+                val macAddress = if (cursor + 6 <= len) {
+                    (0 until 6).joinToString("-") { idx ->
+                        String.format("%02X", recvBuf[cursor + idx].toInt() and 0xFF)
+                    }
+                } else {
+                    "확인 불가"
+                }
+
+                buildString {
+                    appendLine("NetBIOS 원격 컴퓨터 상태 (UDP/137)")
+                    appendLine("대상 IP : $ip (${addr.hostName})")
+                    appendLine("MAC 주소: $macAddress")
+                    appendLine("---------------------------------------------------")
+                    appendLine("NetBIOS 이름 테이블:")
+                    if (nameEntries.isEmpty()) {
+                        appendLine("  (이름 레코드 없음)")
+                    } else {
+                        nameEntries.forEach { appendLine(it) }
+                    }
+                }
+            }
+        } catch (_: SocketTimeoutException) {
+            "대상 [$ip] UDP 137 포트 응답 시간 초과 (방화벽 차단, NetBIOS 비활성, 또는 동일 서브넷 외 호스트일 수 있습니다)."
+        } catch (t: Throwable) {
+            "nbtstat 실행 오류: ${t.localizedMessage}"
+        }
+    }
+
+    suspend fun runPathPing(target: String, maxHops: Int, samplesPerHop: Int, onLine: (String) -> Unit) {
+        val safeTarget = target.replace(Regex("[^a-zA-Z0-9.:-]"), "")
+        val resolvedIp = try {
+            InetAddress.getByName(safeTarget).hostAddress ?: safeTarget
+        } catch (_: Throwable) {
+            onLine("호스트를 찾을 수 없습니다: $safeTarget")
+            return
+        }
+
+        onLine("대상: $safeTarget ($resolvedIp) | 최대 $maxHops 홉, 홉당 $samplesPerHop 회 샘플링")
+        onLine("HOP  IP 주소          손실률     최소/평균/최대 RTT")
+        onLine("----------------------------------------------------------")
+
+        val ipRegex = Regex("(\d{1,3}(?:\.\d{1,3}){3})")
+        val rttRegex = Regex("time[=<]?\s*(\d+(?:\.\d+)?)\s*ms")
+
+        for (ttl in 1..maxHops) {
+            if (!currentCoroutineContext().isActive) break
+            var hopIp: String? = null
+            val rtts = mutableListOf<Double>()
+            var received = 0
+
+            for (s in 1..samplesPerHop) {
+                if (!currentCoroutineContext().isActive) break
+                val startMs = System.currentTimeMillis()
+                var proc: Process? = null
+                val output = try {
+                    proc = ProcessBuilder("ping", "-c", "1", "-t", ttl.toString(), "-W", "2", resolvedIp)
+                        .redirectErrorStream(true)
+                        .start()
+                    proc.inputStream.bufferedReader().use { it.readText() }
+                } catch (_: Throwable) {
+                    ""
+                } finally {
+                    proc?.destroy()
+                }
+                val elapsed = (System.currentTimeMillis() - startMs).toDouble()
+                val bodyLines = output.lines().drop(1).joinToString(" ")
+                val foundIp = ipRegex.find(bodyLines)?.value
+                if (foundIp != null) {
+                    if (hopIp == null) hopIp = foundIp
+                    received++
+                    val parsedRtt = rttRegex.find(bodyLines)?.groupValues?.getOrNull(1)?.toDoubleOrNull() ?: elapsed
+                    rtts.add(parsedRtt)
+                }
+            }
+
+            val lossPercent = ((samplesPerHop - received) * 100.0) / samplesPerHop.toDouble()
+            val statsText = if (rtts.isNotEmpty()) {
+                val minRtt = rtts.minOrNull() ?: 0.0
+                val avgRtt = rtts.average()
+                val maxRtt = rtts.maxOrNull() ?: 0.0
+                String.format("%.1f / %.1f / %.1f ms", minRtt, avgRtt, maxRtt)
+            } else {
+                "N/A (응답 없음)"
+            }
+
+            val displayIp = hopIp ?: "*.*.*.*"
+            onLine(String.format("%2d   %-16s %5.1f%%     %s", ttl, displayIp, lossPercent, statsText))
+
+            if (hopIp == resolvedIp) {
+                onLine("----------------------------------------------------------")
+                onLine("최종 목적지 도달 완료.")
+                break
+            }
+        }
+    }
+
+    fun getNetshWlan(context: Context): String = try {
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val activeNet = cm.activeNetwork
+        val caps = cm.getNetworkCapabilities(activeNet)
+        val hasWifiTransport = caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
+
+        val appContext = context.applicationContext
+        val wifiMgr = appContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+        val wifiInfo: WifiInfo? = @Suppress("DEPRECATION") wifiMgr?.connectionInfo
+
+        buildString {
+            appendLine("=== 무선 LAN 인터페이스 상태 (netsh wlan show interfaces) ===")
+            appendLine("Wi-Fi 활성화   : ${if (wifiMgr?.isWifiEnabled == true) "예 (Enabled)" else "아니오 (Disabled)"}")
+            appendLine("현재 전송 경로 : ${if (hasWifiTransport) "Wi-Fi 연결됨" else "Wi-Fi 미연결 (모바일 데이터 또는 오프라인)"}")
+
+            if (wifiInfo != null && (hasWifiTransport || wifiInfo.networkId != -1)) {
+                val rawSsid = wifiInfo.ssid ?: ""
+                val cleanSsid = rawSsid.removePrefix("\"").removeSuffix("\"")
+                val displaySsid = if (cleanSsid.isBlank() || cleanSsid == "<unknown ssid>") {
+                    "비공개/위치권한 필요 (<unknown ssid>)"
+                } else {
+                    cleanSsid
+                }
+                val bssid = wifiInfo.bssid?.takeIf { it.isNotBlank() && it != "02:00:00:00:00:00" } ?: "비공개/위치권한 필요"
+                val rssi = wifiInfo.rssi
+                val signalQuality = ((rssi + 100) * 2).coerceIn(0, 100)
+                val linkSpeed = wifiInfo.linkSpeed
+                val freqMhz = wifiInfo.frequency
+                val bandLabel = when {
+                    freqMhz >= 5925 -> "6 GHz (Wi-Fi 6E / 7)"
+                    freqMhz in 5000..5924 -> "5 GHz"
+                    freqMhz in 2400..2500 -> "2.4 GHz"
+                    else -> "알 수 없음"
+                }
+                val ipInt = wifiInfo.ipAddress
+                val ipStr = if (ipInt != 0) {
+                    val bytes = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(ipInt).array()
+                    InetAddress.getByAddress(bytes).hostAddress
+                } else {
+                    getPrimaryIp(context)
+                }
+
+                appendLine("SSID           : $displaySsid")
+                appendLine("BSSID (AP MAC) : $bssid")
+                appendLine("IPv4 주소      : $ipStr")
+                appendLine("신호 강도      : $rssi dBm (품질 약 $signalQuality%)")
+                appendLine("수신 링크 속도 : $linkSpeed Mbps")
+                if (Build.VERSION.SDK_INT >= 29) {
+                    val txSpeed = try { wifiInfo.txLinkSpeedMbps } catch (_: Throwable) { -1 }
+                    val rxSpeed = try { wifiInfo.rxLinkSpeedMbps } catch (_: Throwable) { -1 }
+                    if (txSpeed > 0 || rxSpeed > 0) {
+                        appendLine("송/수신 속도   : TX \${txSpeed} Mbps / RX \${rxSpeed} Mbps")
+                    }
+                }
+                appendLine("주파수 대역    : $freqMhz MHz ($bandLabel)")
+                if (Build.VERSION.SDK_INT >= 30) {
+                    val wifiStd = try {
+                        when (wifiInfo.wifiStandard) {
+                            1 -> "802.11a/b/g (Wi-Fi 1/2/3)"
+                            4 -> "802.11n (Wi-Fi 4)"
+                            5 -> "802.11ac (Wi-Fi 5)"
+                            6 -> "802.11ax (Wi-Fi 6)"
+                            7 -> "802.11be (Wi-Fi 7)"
+                            else -> "표준 코드 \${wifiInfo.wifiStandard}"
+                        }
+                    } catch (_: Throwable) { "N/A" }
+                    appendLine("무선 규격      : $wifiStd")
+                }
+            } else {
+                appendLine("연결된 Wi-Fi 세션 정보가 없습니다.")
+            }
+        }
+    } catch (t: Throwable) {
+        "netsh wlan 조회 오류: ${t.localizedMessage}"
+    }
+
     suspend fun streamPing(host: String, count: Int, onLine: (String) -> Unit) {
         val safeHost = host.replace(Regex("[^a-zA-Z0-9.:-]"), "")
         if (safeHost.isBlank()) {
@@ -807,7 +1286,7 @@ object NetworkHelper {
             return
         }
 
-        val ipRegex = Regex("""(\d{1,3}(?:\.\d{1,3}){3})""")
+        val ipRegex = Regex("(\d{1,3}(?:\.\d{1,3}){3})")
         for (ttl in 1..maxHops) {
             if (!currentCoroutineContext().isActive) break
             val startMs = System.currentTimeMillis()
@@ -1009,5 +1488,5 @@ object NetworkHelper {
 
     private fun isPrivateIp(ip: String): Boolean =
         ip.startsWith("10.") || ip.startsWith("192.168.") || ip.startsWith("127.") ||
-        ip.matches(Regex("""^172\.(1[6-9]|2\d|3[0-1])\..*"""))
+        ip.matches(Regex("^172\.(1[6-9]|2\d|3[0-1])\..*"))
 }
