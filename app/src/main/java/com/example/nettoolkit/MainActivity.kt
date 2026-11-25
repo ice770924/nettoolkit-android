@@ -102,7 +102,7 @@ fun NetToolkitApp() {
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("NetToolkit Pro v1.3", fontWeight = FontWeight.Bold) },
+                title = { Text("NetToolkit Pro v1.3.1", fontWeight = FontWeight.Bold) },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.surfaceContainer
                 )
@@ -260,7 +260,8 @@ fun PingScreen() {
     val focusManager = LocalFocusManager.current
     var targetHost by remember { mutableStateOf("8.8.8.8") }
     var pingCount by remember { mutableStateOf("5") }
-    var outputLog by remember { mutableStateOf("호스트 또는 IP를 입력하고 Ping 실행을 누르세요.\n") }
+    var outputLog by remember { mutableStateOf("호스트 또는 IP를 입력하고 Ping 실행을 누르세요.
+") }
     var pingJob by remember { mutableStateOf<Job?>(null) }
     val isRunning = pingJob?.isActive == true
 
@@ -297,10 +298,12 @@ fun PingScreen() {
                 onClick = {
                     focusManager.clearFocus()
                     val count = pingCount.toIntOrNull()?.coerceIn(1, 50) ?: 4
-                    outputLog = "> ping -c $count $targetHost\n"
+                    outputLog = "> ping -c $count $targetHost
+"
                     pingJob = scope.launch(Dispatchers.IO) {
                         NetworkHelper.streamPing(targetHost, count) { line ->
-                            scope.launch(Dispatchers.Main) { outputLog += "$line\n" }
+                            scope.launch(Dispatchers.Main) { outputLog += "$line
+" }
                         }
                     }
                 },
@@ -314,7 +317,9 @@ fun PingScreen() {
                 OutlinedButton(
                     onClick = {
                         pingJob?.cancel()
-                        outputLog += "\n[사용자에 의해 중지됨]\n"
+                        outputLog += "
+[사용자에 의해 중지됨]
+"
                     },
                     modifier = Modifier.weight(1f)
                 ) {
@@ -334,7 +339,8 @@ fun TracertScreen() {
     var targetHost by remember { mutableStateOf("google.com") }
     var viewMode by remember { mutableIntStateOf(1) }
     var hops by remember { mutableStateOf<List<TraceHop>>(emptyList()) }
-    var textLog by remember { mutableStateOf("추적할 도메인이나 IP를 입력 후 추적을 누르세요.\n") }
+    var textLog by remember { mutableStateOf("추적할 도메인이나 IP를 입력 후 추적을 누르세요.
+") }
     var traceJob by remember { mutableStateOf<Job?>(null) }
     val isRunning = traceJob?.isActive == true
 
@@ -359,7 +365,8 @@ fun TracertScreen() {
                 onClick = {
                     focusManager.clearFocus()
                     hops = emptyList()
-                    textLog = "> tracert $targetHost 시작...\n"
+                    textLog = "> tracert $targetHost 시작...
+"
                     traceJob = scope.launch(Dispatchers.IO) {
                         val originHop = NetworkHelper.fetchGeoForHop(0, "", 0L)
                         if (originHop.lat != null) {
@@ -367,11 +374,14 @@ fun TracertScreen() {
                         }
                         NetworkHelper.runTraceroute(targetHost, maxHops = 20) { hopItem, rawLine ->
                             scope.launch(Dispatchers.Main) {
-                                textLog += "$rawLine\n"
+                                textLog += "$rawLine
+"
                                 hops = hops + hopItem
                             }
                         }
-                        withContext(Dispatchers.Main) { textLog += "\n추적 완료.\n" }
+                        withContext(Dispatchers.Main) { textLog += "
+추적 완료.
+" }
                     }
                 },
                 enabled = !isRunning && targetHost.isNotBlank()
@@ -415,7 +425,6 @@ private data class GlobeProjectedPoint(
 
 @Composable
 fun VisualTracerouteMap(hops: List<TraceHop>, isRunning: Boolean) {
-    // 서울(경도 127도)이 정면/우상단에 잘 보이도록 초기 경도 회전값 설정
     var rotLonDeg by remember { mutableFloatStateOf(-127f) }
     var rotLatDeg by remember { mutableFloatStateOf(-28f) }
     var autoCenterApplied by remember { mutableStateOf(false) }
@@ -439,22 +448,14 @@ fun VisualTracerouteMap(hops: List<TraceHop>, isRunning: Boolean) {
         }
     }
 
-    // 대표 대륙 윤곽 좌표(위도, 경도)로 지구본 위에 대륙 실루엣 표현
     val continentPolygons = remember {
         listOf(
-            // 한반도/동아시아 대륙
             listOf(35.0 to 126.0, 38.0 to 129.0, 42.0 to 135.0, 50.0 to 135.0, 52.0 to 120.0, 40.0 to 118.0, 34.0 to 122.0, 35.0 to 126.0),
-            // 일본 열도
             listOf(31.5 to 131.0, 34.0 to 135.0, 36.0 to 140.5, 42.0 to 142.0, 44.0 to 145.0, 41.0 to 140.0, 34.0 to 132.0, 31.5 to 131.0),
-            // 유라시아 본토
             listOf(22.0 to 78.0, 10.0 to 77.0, 25.0 to 62.0, 41.0 to 29.0, 55.0 to 10.0, 70.0 to 25.0, 72.0 to 80.0, 68.0 to 170.0, 55.0 to 135.0, 22.0 to 108.0, 22.0 to 78.0),
-            // 북아메리카
             listOf(15.0 to -92.0, 30.0 to -97.0, 30.0 to -82.0, 45.0 to -67.0, 58.0 to -64.0, 70.0 to -125.0, 60.0 to -150.0, 48.0 to -125.0, 32.0 to -117.0, 15.0 to -92.0),
-            // 남아메리카
             listOf(10.0 to -72.0, 5.0 to -50.0, -10.0 to -35.0, -25.0 to -48.0, -54.0 to -68.0, -35.0 to -72.0, -5.0 to -81.0, 10.0 to -72.0),
-            // 아프리카
             listOf(35.0 to -6.0, 32.0 to 32.0, 12.0 to 51.0, -15.0 to 40.0, -34.0 to 20.0, -18.0 to 12.0, 5.0 to -8.0, 20.0 to -17.0, 35.0 to -6.0),
-            // 오세아니아/호주
             listOf(-15.0 to 130.0, -18.0 to 146.0, -35.0 to 150.0, -38.0 to 140.0, -32.0 to 115.0, -20.0 to 114.0, -15.0 to 130.0)
         )
     }
@@ -486,7 +487,6 @@ fun VisualTracerouteMap(hops: List<TraceHop>, isRunning: Boolean) {
                 val lambda0 = Math.toRadians(rotLonDeg.toDouble())
                 val phi0 = Math.toRadians(rotLatDeg.toDouble())
 
-                // 정사영(Orthographic) 3D 지구본 투영 함수
                 fun projectGlobe(latDeg: Double, lonDeg: Double, altitudeFactor: Double = 1.0): GlobeProjectedPoint {
                     val phi = Math.toRadians(latDeg)
                     val lam = Math.toRadians(lonDeg) - lambda0
@@ -507,7 +507,6 @@ fun VisualTracerouteMap(hops: List<TraceHop>, isRunning: Boolean) {
                     return GlobeProjectedPoint(sx, sy, z3d >= -0.05, z3d)
                 }
 
-                // 1) 대기권 후광 + 입체 셰이딩 지구본 구체 그리기
                 drawContext.canvas.nativeCanvas.apply {
                     val haloPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                         shader = RadialGradient(
@@ -542,7 +541,6 @@ fun VisualTracerouteMap(hops: List<TraceHop>, isRunning: Boolean) {
                     drawCircle(center.x, center.y, radius, spherePaint)
                 }
 
-                // 지구본 외곽선
                 drawCircle(
                     color = Color(0xFF38BDF8).copy(alpha = 0.7f),
                     radius = radius,
@@ -550,7 +548,6 @@ fun VisualTracerouteMap(hops: List<TraceHop>, isRunning: Boolean) {
                     style = Stroke(width = 2f)
                 )
 
-                // 2) 위선(Latitudes) 및 경선(Longitudes) 격자선 그리기
                 val gridColor = Color(0xFF38BDF8).copy(alpha = 0.18f)
                 for (lat in -60..60 step 30) {
                     val path = Path()
@@ -590,7 +587,6 @@ fun VisualTracerouteMap(hops: List<TraceHop>, isRunning: Boolean) {
                     drawPath(path, color = gridColor, style = Stroke(width = 1f))
                 }
 
-                // 3) 지구본 위 대륙 윤곽 렌더링
                 val landStrokeColor = Color(0xFF34D399).copy(alpha = 0.55f)
                 val landFillColor = Color(0xFF10B981).copy(alpha = 0.12f)
                 continentPolygons.forEach { poly ->
@@ -613,7 +609,6 @@ fun VisualTracerouteMap(hops: List<TraceHop>, isRunning: Boolean) {
                     drawPath(polyPath, color = landStrokeColor, style = Stroke(width = 1.6f))
                 }
 
-                // 4) 홉(Hop) 간 구면 궤적(3D Arc) 연결
                 for (i in 0 until geoHops.size - 1) {
                     val a = geoHops[i]
                     val b = geoHops[i + 1]
@@ -647,7 +642,6 @@ fun VisualTracerouteMap(hops: List<TraceHop>, isRunning: Boolean) {
                     )
                 }
 
-                // 5) 지구본 전면 홉 마커 및 라벨 렌더링
                 geoHops.forEach { hop ->
                     val pt = projectGlobe(hop.lat!!, hop.lon!!, 1.02)
                     if (pt.visible) {
@@ -690,7 +684,8 @@ fun VisualTracerouteMap(hops: List<TraceHop>, isRunning: Boolean) {
                         label = {
                             val title = if (hop.hop == 0) "출발" else "Hop ${hop.hop}"
                             val loc = listOf(hop.city, hop.country).filter { it.isNotBlank() }.joinToString(", ").ifBlank { "사설/응답없음" }
-                            Text("$title: ${hop.ip}\n$loc (${hop.rttMs}ms)", fontSize = 11.sp)
+                            Text("$title: ${hop.ip}
+$loc (${hop.rttMs}ms)", fontSize = 11.sp)
                         }
                     )
                 }
@@ -750,7 +745,8 @@ fun CmdToolsScreen() {
     val focusManager = LocalFocusManager.current
     var selectedCmd by remember { mutableStateOf("nbtstat -a") }
     var targetArg by remember { mutableStateOf("192.168.0.1") }
-    var cmdOutput by remember { mutableStateOf("실행할 네트워크 명령어를 선택하고 실행을 누르세요.\n") }
+    var cmdOutput by remember { mutableStateOf("실행할 네트워크 명령어를 선택하고 실행을 누르세요.
+") }
     var cmdJob by remember { mutableStateOf<Job?>(null) }
     val running = cmdJob?.isActive == true
 
@@ -817,7 +813,8 @@ fun CmdToolsScreen() {
             Button(
                 onClick = {
                     focusManager.clearFocus()
-                    cmdOutput = "> $selectedCmd 실행 중...\n"
+                    cmdOutput = "> $selectedCmd 실행 중...
+"
                     cmdJob = scope.launch(Dispatchers.IO) {
                         when (selectedCmd) {
                             "nbtstat -a" -> {
@@ -826,7 +823,8 @@ fun CmdToolsScreen() {
                             }
                             "pathping" -> {
                                 NetworkHelper.runPathPing(targetArg, maxHops = 15, samplesPerHop = 4) { line ->
-                                    scope.launch(Dispatchers.Main) { cmdOutput += "$line\n" }
+                                    scope.launch(Dispatchers.Main) { cmdOutput += "$line
+" }
                                 }
                             }
                             "netsh wlan" -> {
@@ -862,7 +860,9 @@ fun CmdToolsScreen() {
                 OutlinedButton(
                     onClick = {
                         cmdJob?.cancel()
-                        cmdOutput += "\n[사용자에 의해 중지됨]\n"
+                        cmdOutput += "
+[사용자에 의해 중지됨]
+"
                     }
                 ) {
                     Text("중지")
@@ -897,7 +897,6 @@ fun TerminalBox(title: String, content: String, modifier: Modifier = Modifier) {
         }
     }
 }
-
 object NetworkHelper {
 
     private fun httpGet(urlStr: String): String {
@@ -905,7 +904,7 @@ object NetworkHelper {
             connectTimeout = 5000
             readTimeout = 5000
             requestMethod = "GET"
-            setRequestProperty("User-Agent", "NetToolkitPro/1.3")
+            setRequestProperty("User-Agent", "NetToolkitPro/1.3.1")
         }
         return try {
             conn.inputStream.bufferedReader().use { it.readText() }
@@ -967,7 +966,8 @@ object NetworkHelper {
                 appendLine("Private DNS     : ${if (lp.isPrivateDnsActive) "활성 (${lp.privateDnsServerName ?: "자동"})" else "비활성"}")
             }
 
-            appendLine("\n=== 추가 네트워크 인터페이스 ===")
+            appendLine("
+=== 추가 네트워크 인터페이스 ===")
             try {
                 val interfaces = NetworkInterface.getNetworkInterfaces()?.toList().orEmpty()
                 if (interfaces.isEmpty()) {
@@ -1122,8 +1122,8 @@ object NetworkHelper {
         onLine("HOP  IP 주소          손실률     최소/평균/최대 RTT")
         onLine("----------------------------------------------------------")
 
-        val ipRegex = Regex("(\d{1,3}(?:\.\d{1,3}){3})")
-        val rttRegex = Regex("time[=<]?\s*(\d+(?:\.\d+)?)\s*ms")
+        val ipRegex = Regex("""(\d{1,3}(?:\.\d{1,3}){3})""")
+        val rttRegex = Regex("""time[=<]?\s*(\d+(?:\.\d+)?)\s*ms""")
 
         for (ttl in 1..maxHops) {
             if (!currentCoroutineContext().isActive) break
@@ -1194,7 +1194,7 @@ object NetworkHelper {
 
             if (wifiInfo != null && (hasWifiTransport || wifiInfo.networkId != -1)) {
                 val rawSsid = wifiInfo.ssid ?: ""
-                val cleanSsid = rawSsid.removePrefix("\"").removeSuffix("\"")
+                val cleanSsid = rawSsid.removePrefix(""").removeSuffix(""")
                 val displaySsid = if (cleanSsid.isBlank() || cleanSsid == "<unknown ssid>") {
                     "비공개/위치권한 필요 (<unknown ssid>)"
                 } else {
@@ -1286,7 +1286,7 @@ object NetworkHelper {
             return
         }
 
-        val ipRegex = Regex("(\d{1,3}(?:\.\d{1,3}){3})")
+        val ipRegex = Regex("""(\d{1,3}(?:\.\d{1,3}){3})""")
         for (ttl in 1..maxHops) {
             if (!currentCoroutineContext().isActive) break
             val startMs = System.currentTimeMillis()
@@ -1380,12 +1380,14 @@ object NetworkHelper {
 
         buildString {
             appendLine("Server: System Resolver & Google DoH (8.8.8.8)")
-            appendLine("Name  : $domain\n")
+            appendLine("Name  : $domain
+")
             addresses.forEach { addr ->
                 appendLine("Address: ${addr.hostAddress}")
             }
             if (answers != null) {
-                appendLine("\n=== 상세 DNS 레코드 ===")
+                appendLine("
+=== 상세 DNS 레코드 ===")
                 for (i in 0 until answers.length()) {
                     val rec = answers.getJSONObject(i)
                     appendLine("Type ${rec.optInt("type")} | TTL ${rec.optInt("TTL")}s -> ${rec.optString("data")}")
@@ -1457,7 +1459,8 @@ object NetworkHelper {
         val myIp = getPrimaryIp(context)
         val parts = myIp.split(".")
         if (parts.size != 4) {
-            return@coroutineScope "IPv4 사설망(Wi-Fi 등) 연결 시 서브넷 스캔이 가능합니다.\n현재 할당 IP: $myIp"
+            return@coroutineScope "IPv4 사설망(Wi-Fi 등) 연결 시 서브넷 스캔이 가능합니다.
+현재 할당 IP: $myIp"
         }
         val prefix = "${parts[0]}.${parts[1]}.${parts[2]}"
 
@@ -1488,5 +1491,5 @@ object NetworkHelper {
 
     private fun isPrivateIp(ip: String): Boolean =
         ip.startsWith("10.") || ip.startsWith("192.168.") || ip.startsWith("127.") ||
-        ip.matches(Regex("^172\.(1[6-9]|2\d|3[0-1])\..*"))
+        ip.matches(Regex("""^172\.(1[6-9]|2\d|3[0-1])\..*"""))
 }
